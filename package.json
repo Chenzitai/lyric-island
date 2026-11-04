@@ -1,0 +1,22 @@
+{
+  "name": "lyric-island",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5174 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --port 5174",
+    "tauri": "tauri",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-opener": "^2.2.2"
+  },
+  "devDependencies": {
+    "vite": "^5.4.10",
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

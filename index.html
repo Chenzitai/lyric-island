@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lyric Island</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <!--
+      整个页面就是一块透明画布，真正的岛体是 #island。
+      窗口本身比岛体大一圈，留给阴影和"Q 弹"动画的溢出空间。
+
+      设置窗口 / 选词窗口复用同一个 index.html，靠 ?window= 分流：
+      这样构建产物只有一套，打包体积不翻倍。
+    -->
+    <div id="stage">
+      <div id="island" data-state="idle" data-playing="false" data-expanded="false">
+        <!-- 常驻层：原词 + 翻译/音译。两种状态都在，只是展开时字号收一档 -->
+        <div class="lyric-area">
+          <div class="line-current">
+            <span class="line-text"></span>
+          </div>
+          <div class="line-sub"></div>
+        </div>
+
+        <!--
+          悬停展开的面板。结构分两层：
+            上部 panel-row  —— 封面 / 歌名歌手 / 播放控制 / 设置歌单
+            下部 progress-row —— 可拖拽进度条 + 剩余时间
+        -->
+        <div class="panel">
+          <div class="panel-row">
+            <div class="cover">
+              <img class="cover-img" alt="" />
+              <div class="cover-fallback">♪</div>
+            </div>
+
+            <div class="meta">
+              <div class="meta-title"></div>
+              <div class="meta-artist"></div>
+            </div>
+
+            <div class="controls">
+              <button class="ctl" data-action="previous" title="上一首">
+                <svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14l-11-7z" /></svg>
+              </button>
+              <button class="ctl ctl-main" data-action="toggle" title="播放 / 暂停">
+                <svg viewBox="0 0 24 24" class="ic-play"><path d="M7 4v16l13-8z" /></svg>
+                <svg viewBox="0 0 24 24" class="ic-pause"><path d="M7 4h4v16H7zM13 4h4v16h-4z" /></svg>
+              </button>
+              <button class="ctl" data-action="next" title="下一首">
+                <svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z" /></svg>
+              </button>
+            </div>
+
+            <div class="panel-actions">
+              <button class="icon-btn" data-action="playlist" title="播放队列">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 6h11v2H4zM4 11h11v2H4zM4 16h7v2H4z" />
+                  <circle cx="18" cy="17" r="2.4" />
+                  <path d="M19.4 8.2v7.2h-2V9.6l-2.4.9V8.6z" />
+                </svg>
+              </button>
+              <button class="icon-btn" data-action="settings" title="设置">
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M12 8.6a3.4 3.4 0 100 6.8 3.4 3.4 0 000-6.8zm0 2a1.4 1.4 0 110 2.8 1.4 1.4 0 010-2.8z"
+                  />
+                  <path
+                    d="M10.6 3h2.8l.4 2.1c.5.2 1 .4 1.4.8l2-.8 1.4 2.4-1.6 1.5c.1.5.1 1 0 1.6l1.6 1.5-1.4 2.4-2-.8c-.4.3-.9.6-1.4.8l-.4 2.1h-2.8l-.4-2.1c-.5-.2-1-.4-1.4-.8l-2 .8-1.4-2.4L5.9 12c-.1-.5-.1-1 0-1.6L4.3 8.9l1.4-2.4 2 .8c.4-.3.9-.6 1.4-.8z"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="progress-row">
+            <div class="progress" role="slider" tabindex="-1">
+              <div class="progress-track"></div>
+              <div class="progress-fill"></div>
+              <div class="progress-knob"></div>
+            </div>
+            <div class="remain">-0:00</div>
+          </div>
+        </div>
+
+        <!-- 手势提示线：横向划过岛体后亮起，再往下移就展开 -->
+        <div class="arm-hint"></div>
+      </div>
+    </div>
+
+    <!-- 设置窗口的挂载点（只有 ?window=settings 时才用） -->
+    <div id="settings-root"></div>
+
+    <!-- 选择歌词窗口的挂载点（只有 ?window=picker 时才用） -->
+    <div id="picker-root"></div>
+
+    <!-- 桌面歌词窗口的挂载点（只有 ?window=desktop-lyrics 时才用） -->
+    <div id="desktop-root"></div>
+
+    <!-- 完整歌词窗口的挂载点（只有 ?window=full-lyrics 时才用） -->
+    <div id="full-root"></div>
+
+    <!-- 用来测量文本宽度的隐藏节点，宽度自适应靠它 -->
+    <div id="measure" aria-hidden="true"></div>
+
+    <div id="debug-status"></div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

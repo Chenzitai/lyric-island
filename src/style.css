@@ -1,0 +1,1869 @@
+/* ============================================================
+   歌词灵动岛 —— 视觉层
+   窗口是 420x64 的透明画布，岛体自己撑开尺寸，JS 再把窗口
+   resize 到贴合岛体。所以这里不写死宽度，只给最小/最大。
+   ============================================================ */
+
+:root {
+  --island-bg: rgba(14, 14, 20, 0.78);
+  --island-border: rgba(255, 255, 255, 0.12);
+  --text-dim: rgba(226, 232, 255, 0.42);
+  --text: #e8ecff;
+  --accent: #7aa2ff; /* 会被 JS 覆盖成封面主色 */
+  --accent-glow: rgba(122, 162, 255, 0.55);
+  --spring: cubic-bezier(0.22, 1.2, 0.36, 1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  /* 不选中、不拖拽出图片、不弹右键菜单 —— 这是个浮层，不该有网页感 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+  font-family: 'Microsoft YaHei UI', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  color: var(--text);
+}
+
+#stage {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+/* ---------------- 岛体 ---------------- */
+
+#island {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  min-width: 132px;
+  max-width: 560px;
+  padding: 0 18px;
+  border-radius: 20px;
+
+  /* 模拟 WinUI 3 的液态玻璃：
+       深色玻璃底 -> 顶部高光 -> 1px 内描边 -> 外层投影
+     WebView2 的透明窗口看不到桌面内容，backdrop-filter 只能糊到自己背后的画布，
+     所以质感主要靠这三层渐变和不透明度做，不指望真模糊。 */
+  background:
+    linear-gradient(
+      180deg,
+      rgba(44, 49, 66, 0.9) 0%,
+      rgba(24, 27, 38, 0.94) 42%,
+      rgba(13, 15, 22, 0.96) 100%
+    ),
+    var(--island-bg);
+  backdrop-filter: blur(18px) saturate(150%);
+
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.5),
+    0 2px 6px rgba(0, 0, 0, 0.3),
+    0 1px 0 rgba(255, 255, 255, 0.1) inset,
+    0 -10px 20px rgba(0, 0, 0, 0.22) inset;
+
+  transition:
+    height 0.3s var(--spring),
+    padding 0.3s var(--spring),
+    border-radius 0.3s var(--spring),
+    background-color 0.3s ease,
+    box-shadow 0.3s ease,
+    opacity 0.35s ease;
+
+  /* 出现时的入场动画 */
+  animation: island-in 0.45s var(--spring) both;
+  overflow: hidden;
+}
+
+@keyframes island-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 顶部那道细高光，是"液态玻璃"最廉价也最有效的暗示 */
+#island::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.16) 0%,
+    rgba(255, 255, 255, 0.04) 18%,
+    rgba(255, 255, 255, 0) 46%
+  );
+  pointer-events: none;
+}
+
+/* 边缘折射：一层很淡的径向渐变 */
+#island::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: radial-gradient(
+    120% 100% at 50% -20%,
+    rgba(255, 255, 255, 0.14),
+    rgba(255, 255, 255, 0) 60%
+  );
+  pointer-events: none;
+  opacity: 0.8;
+}
+
+/* 暂停后整体淡出（留 42% 让你知道它还在） */
+#island[data-paused='true'] {
+  opacity: 0.42;
+}
+
+#island[data-state='idle'] {
+  opacity: 0.28;
+}
+
+/* 暂停收起模式：只留一行，翻译行藏起来 */
+#island[data-collapsed='true'] {
+  height: 26px;
+  border-radius: 13px;
+}
+
+#island[data-collapsed='true'] .line-sub {
+  display: none;
+}
+
+#island[data-collapsed='true'] .line-current {
+  font-size: 12px;
+}
+
+/* 鼠标划过但还没触发手势：轻微透出，表示"我在让路" */
+#island[data-hovering='true'] {
+  opacity: 0.72;
+}
+
+/* 已经横向划过、等待下移：底部亮一条提示线，告诉用户"再往下就开" */
+#island[data-armed='true']::before {
+  opacity: 1;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.16) 0%,
+    rgba(255, 255, 255, 0.04) 18%,
+    rgba(255, 255, 255, 0) 46%
+  );
+}
+
+#island[data-armed='true'] .arm-hint {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+/* ---------------- 歌词区 ---------------- */
+
+.lyric-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  width: 100%;
+  flex: 0 0 auto;
+  transition: opacity 0.2s ease;
+}
+
+.line-current {
+  position: relative;
+  white-space: nowrap;
+  font-size: 15px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.line-text {
+  display: inline-block;
+  white-space: pre;
+}
+
+/* 逐字：每个字一个 span */
+.line-text .ch {
+  color: var(--text-dim);
+  transition: color 0.14s ease, text-shadow 0.18s ease;
+}
+
+.line-text .ch.sung {
+  color: var(--text);
+}
+
+/* 当前正在唱的字：主色 + 光晕 */
+.line-text .ch.active {
+  color: var(--accent);
+  text-shadow: 0 0 12px var(--accent-glow), 0 0 3px var(--accent-glow);
+}
+
+/* 没有逐字数据时（纯 LRC），整行高亮，当前行直接上色 */
+.line-text.simulated.sung {
+  color: var(--text);
+}
+
+.line-sub {
+  white-space: nowrap;
+  font-size: var(--tr-size, 11px);
+  line-height: 1.15;
+  color: rgba(200, 210, 255, 0.5);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 0;
+  transition: opacity 0.25s ease;
+}
+
+.line-sub:empty {
+  display: none;
+}
+
+/* ---------------- 悬停展开的面板 ---------------- */
+
+/* 折叠时不占位；展开时是纵向两行：panel-row + progress-row */
+.panel {
+  display: none;
+  flex-direction: column;
+  width: 100%;
+  gap: 7px;
+  opacity: 0;
+}
+
+#island[data-expanded='true'] {
+  height: 104px;
+  padding: 11px 15px 8px;
+  border-radius: 26px;
+  justify-content: flex-start;
+  gap: 9px;
+}
+
+#island[data-expanded='true'] .panel {
+  display: flex;
+  opacity: 1;
+}
+
+#island[data-expanded='true'] .lyric-area {
+  align-items: center;
+  flex: 0 0 auto;
+  width: 100%;
+  gap: 0;
+}
+
+#island[data-expanded='true'] .line-current {
+  font-size: 14px;
+}
+
+#island[data-expanded='true'] .line-sub {
+  font-size: var(--tr-size, 11px);
+}
+
+/* 展开那一行：封面 / 歌名歌手 / 播放控制 / 设置歌单 */
+.panel-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+}
+
+.cover {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(145deg, #2a2f45, #171a26);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+
+.cover-img.loaded {
+  display: block;
+}
+
+.cover-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: rgba(180, 195, 255, 0.5);
+}
+
+.cover-img.loaded + .cover-fallback {
+  display: none;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.meta-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meta-artist {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.ctl {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(230, 236, 255, 0.8);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+
+.ctl:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.ctl:active {
+  transform: scale(0.9);
+}
+
+.ctl svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.ctl-main {
+  width: 30px;
+  height: 30px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ctl-main svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 右侧两个图标：歌单 / 设置 */
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+  padding-left: 7px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.icon-btn {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(220, 228, 250, 0.62);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.icon-btn:active {
+  transform: scale(0.9);
+}
+
+.icon-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.ic-pause {
+  display: none;
+}
+
+[data-playing='true'] .ic-play {
+  display: none;
+}
+
+[data-playing='true'] .ic-pause {
+  display: block;
+}
+
+/* ---------------- 底部进度条 + 剩余时间 ---------------- */
+
+.progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+/* 关掉"显示进度条"时整行消失，展开高度也收一点 */
+#island[data-show-progress='false'] .progress-row {
+  display: none;
+}
+
+#island[data-show-progress='false'][data-expanded='true'] {
+  height: 88px;
+}
+
+.progress {
+  position: relative;
+  flex: 1 1 auto;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  transition: background 0.2s ease;
+}
+
+.progress:hover .progress-track {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.progress-fill {
+  position: absolute;
+  left: 0;
+  height: 3px;
+  width: 0%;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  pointer-events: none;
+}
+
+.progress-knob {
+  position: absolute;
+  left: 0%;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 8px var(--accent-glow);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  pointer-events: none;
+}
+
+.progress:hover .progress-knob,
+#island[data-dragging='true'] .progress-knob {
+  opacity: 1;
+  transform: scale(1);
+}
+
+#island[data-dragging='true'] .progress-fill {
+  transition: none;
+}
+
+/* 无时间轴的播放器（酷狗等）：整条置灰，只剩 tooltip 说明 */
+#island[data-seekable='false'] .progress {
+  cursor: not-allowed;
+}
+
+#island[data-seekable='false'] .progress-track {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+#island[data-seekable='false'] .progress-fill {
+  background: rgba(255, 255, 255, 0.26);
+  box-shadow: none;
+}
+
+#island[data-seekable='false'] .progress-knob {
+  display: none;
+}
+
+.remain {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(200, 210, 255, 0.55);
+  min-width: 34px;
+  text-align: right;
+}
+
+/* 展开时底部那条"再往下就展开"的提示线 */
+.arm-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 4px;
+  width: 26px;
+  height: 2px;
+  margin-left: -13px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+  opacity: 0;
+  transform: scaleX(0.2);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  pointer-events: none;
+}
+
+/* ---------------- 测量用隐藏节点 ---------------- */
+
+#measure {
+  position: fixed;
+  top: -9999px;
+  left: -9999px;
+  visibility: hidden;
+  white-space: pre;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  font-family: inherit;
+}
+
+/* ---------------- 调试状态（开发时可见） ---------------- */
+
+#debug-status {
+  position: fixed;
+  left: 4px;
+  bottom: 2px;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.25);
+  pointer-events: none;
+  display: none;
+}
+
+#debug-status.visible {
+  display: block;
+}
+
+/* 岛体进入浮动模式（被拖离顶部）时，去掉居中留白 */
+body[data-floating='true'] #stage {
+  padding-top: 2px;
+}
+
+/* ============================================================
+   会话诊断面板（Ctrl+Shift+D）
+   只在排查"为什么这个播放器没被识别"时打开，平时隐藏
+   ============================================================ */
+
+#diag {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12px;
+  overflow: auto;
+  background: rgba(4, 5, 9, 0.72);
+  backdrop-filter: blur(14px);
+  font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  color: #dfe4ee;
+}
+
+#diag[hidden] {
+  display: none !important;
+}
+
+.diag-panel {
+  width: min(560px, 100%);
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  background: rgba(18, 21, 30, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.diag-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.diag-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.diag-close {
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.diag-close:hover {
+  color: #fff;
+}
+
+.diag-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px 16px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.diag-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.diag-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+}
+
+.diag-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.diag-body section + section {
+  margin-top: 16px;
+}
+
+.diag-body h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.diag-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: rgba(255, 255, 255, 0.28);
+  margin-left: 6px;
+}
+
+.diag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diag-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.diag-row--slim {
+  padding: 6px 10px;
+}
+
+.diag-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.diag-title {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diag-sub {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diag-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+  align-items: center;
+}
+
+.diag-app {
+  font-size: 9px;
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.diag-badge {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.diag-badge[data-tone='ok'] {
+  color: #7ee0b8;
+  border-color: rgba(126, 224, 184, 0.3);
+  background: rgba(126, 224, 184, 0.08);
+}
+
+.diag-badge[data-tone='warn'] {
+  color: #ffc27a;
+  border-color: rgba(255, 194, 122, 0.32);
+  background: rgba(255, 194, 122, 0.08);
+}
+
+.diag-badge[data-tone='accent'] {
+  color: #9db8ff;
+  border-color: rgba(157, 184, 255, 0.32);
+  background: rgba(157, 184, 255, 0.08);
+}
+
+.diag-badge[data-tone='muted'] {
+  color: rgba(255, 255, 255, 0.45);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.diag-follow {
+  flex: 0 0 auto;
+  font-size: 10px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #cfd6e4;
+  cursor: pointer;
+}
+
+.diag-follow:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.diag-config {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.diag-config label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.diag-config input[type='text'],
+.diag-config input:not([type]) {
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.35);
+  color: #e6ebf5;
+  font-family: Consolas, 'Cascadia Mono', monospace;
+}
+
+.diag-config label.diag-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.diag-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.diag-actions button {
+  font-size: 11px;
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #cfd6e4;
+  cursor: pointer;
+}
+
+.diag-actions button.primary {
+  background: rgba(122, 162, 255, 0.18);
+  border-color: rgba(122, 162, 255, 0.4);
+  color: #bcd0ff;
+}
+
+.diag-out {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+  min-height: 14px;
+  font-family: Consolas, 'Cascadia Mono', monospace;
+}
+
+.diag-empty {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+  padding: 8px 2px;
+}
+
+/* 诊断面板里的"歌词状态"行 */
+.diag-lyric {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.72);
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.diag-lyric-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.diag-lyric-detail {
+  margin-top: 4px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.38);
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  word-break: break-all;
+}
+
+/* ============================================================
+   设置窗口
+   ------------------------------------------------------------
+   同一个 index.html，靠 body[data-window="settings"] 切换布局：
+   岛体那套绝对定位的透明画布要整体隐藏，换成正常的文档流。
+   ============================================================ */
+
+body[data-window='settings'] {
+  background: #0d1017;
+  overflow-y: auto;
+}
+
+body[data-window='settings'] #stage,
+body[data-window='settings'] #measure,
+body[data-window='settings'] #debug-status,
+body[data-window='settings'] #diag {
+  display: none !important;
+}
+
+#settings-root {
+  display: none;
+}
+
+body[data-window='settings'] #settings-root {
+  display: block;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 22px 24px 40px;
+  color: #e6ebf5;
+  font-size: 13px;
+}
+
+.st-head h1 {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: 0 0 4px;
+}
+
+.st-sub {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.38);
+  margin: 0 0 18px;
+}
+
+.st-section {
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.032);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.st-h {
+  font-size: 12px;
+  font-weight: 600;
+  color: #9fb4d8;
+  letter-spacing: 0.04em;
+  margin: 0 0 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.st-hint {
+  font-size: 10px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.3);
+  letter-spacing: 0;
+}
+
+.st-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.st-row:last-child {
+  border-bottom: none;
+}
+
+.st-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.76);
+}
+
+.st-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 340px;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: #dbe3f0;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  outline: none;
+}
+
+.st-input:focus {
+  border-color: rgba(122, 162, 255, 0.5);
+  background: rgba(122, 162, 255, 0.08);
+}
+
+.st-input--num {
+  max-width: 100px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.st-textarea {
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.st-mono {
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  font-size: 11px;
+}
+
+.st-muted {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.st-empty {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.3);
+  padding: 6px 0;
+}
+
+/* 开关 */
+.st-toggle {
+  position: relative;
+  width: 38px;
+  height: 21px;
+  flex: 0 0 auto;
+  display: inline-block;
+}
+
+.st-toggle input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.st-knob {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  transition: background 0.18s ease;
+}
+
+.st-knob::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #cfd7e6;
+  transition: transform 0.18s ease;
+}
+
+.st-toggle input:checked + .st-knob {
+  background: rgba(96, 150, 255, 0.75);
+}
+
+.st-toggle input:checked + .st-knob::after {
+  transform: translateX(17px);
+  background: #fff;
+}
+
+/* 按应用偏移 */
+.st-perapp {
+  flex: 1 1 auto;
+  max-width: 340px;
+}
+
+.st-perapp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.st-perapp-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.st-perapp-id {
+  flex: 1 1 auto;
+  font-size: 11px;
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  color: rgba(255, 255, 255, 0.6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-perapp-add {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.st-mini {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: #cfd6e4;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.st-mini:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.st-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.st-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: #cfd6e4;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.st-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.st-out {
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  min-height: 15px;
+}
+
+/* 歌词状态卡 */
+.st-lyric-status {
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  margin-bottom: 12px;
+}
+
+.st-lyric-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.st-lyric-title {
+  font-weight: 600;
+  color: #e2e9f6;
+}
+
+.st-lyric-detail {
+  margin-top: 5px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  word-break: break-all;
+}
+
+.diag-subtitle {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.45);
+  margin: 12px 0 6px;
+  letter-spacing: 0.03em;
+}
+
+/* 设置窗口里的会话列表要能正常换行，不像岛体里那样挤 */
+body[data-window='settings'] .diag-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+body[data-window='settings'] .diag-row {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+body[data-window='settings'] .diag-row:last-child {
+  border-bottom: none;
+}
+
+body[data-window='settings'] .diag-title {
+  font-size: 12px;
+  color: #dde5f2;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+body[data-window='settings'] .diag-sub {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* toast */
+.st-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%) translateY(8px);
+  padding: 7px 16px;
+  font-size: 12px;
+  border-radius: 999px;
+  background: rgba(20, 26, 38, 0.94);
+  border: 1px solid rgba(122, 162, 255, 0.35);
+  color: #d9e4ff;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.st-toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.st-toast[data-err='true'] {
+  border-color: rgba(255, 120, 120, 0.45);
+  color: #ffc9c9;
+}
+
+.st-fatal {
+  padding: 20px;
+  color: #ffb4b4;
+}
+
+
+/* ---- 一次性提示条：关窗口 → 最小化到托盘 ----
+   盖在岛体上层，收起时淡出。因为 frame() 每帧都会重写歌词行，
+   提示必须放在独立元素上，否则会被刷掉。 */
+#hint-bar {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 18px;
+  text-align: center;
+  line-height: 1.35;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(18, 20, 26, 0.93);
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+
+#hint-bar.show {
+  opacity: 1;
+}
+
+#island[data-hint='true'] .lyric-area,
+#island[data-hint='true'] .mini-player {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+/* ---------------------------------------------------------------
+   选择歌词窗口（?window=picker）
+   这个窗口是普通不透明窗口，不复用岛体那套透明样式
+   --------------------------------------------------------------- */
+body[data-window='picker'] {
+  background: #0d1015;
+  color: #e7ecf3;
+  overflow: hidden;
+}
+
+body[data-window='picker'] #stage,
+body[data-window='picker'] #settings-root,
+body[data-window='picker'] #measure,
+body[data-window='picker'] #debug-status {
+  display: none !important;
+}
+
+.pk {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 18px 18px 0;
+  box-sizing: border-box;
+  font: 13px/1.5 'Microsoft YaHei UI', 'Segoe UI', system-ui, sans-serif;
+}
+
+.pk-head {
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.pk-title {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.pk-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: rgba(231, 236, 243, 0.45);
+}
+
+.pk-query {
+  display: flex;
+  gap: 8px;
+  padding: 14px 0 10px;
+}
+
+.pk-in {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+
+.pk-in:focus {
+  border-color: rgba(96, 165, 250, 0.6);
+  background: rgba(96, 165, 250, 0.08);
+}
+
+.pk-in-title {
+  flex: 1.4;
+}
+
+.pk-btn {
+  padding: 8px 18px;
+  border: none;
+  border-radius: 8px;
+  background: #2f6fed;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pk-btn:hover:not(:disabled) {
+  background: #3d7cf7;
+}
+
+.pk-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pk-status {
+  min-height: 18px;
+  padding-bottom: 8px;
+  font-size: 12px;
+  color: rgba(231, 236, 243, 0.5);
+}
+
+.pk-status[data-kind='warn'] {
+  color: #f5b955;
+}
+
+.pk-status[data-kind='err'] {
+  color: #f27171;
+}
+
+.pk-status[data-kind='ok'] {
+  color: #5fd39a;
+}
+
+.pk-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 16px;
+}
+
+.pk-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pk-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+}
+
+.pk-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.pk-item:hover {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(96, 165, 250, 0.4);
+}
+
+.pk-src {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  color: rgba(231, 236, 243, 0.75);
+  white-space: nowrap;
+}
+
+.pk-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.pk-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pk-best {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(95, 211, 154, 0.16);
+  color: #5fd39a;
+  font-size: 10px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.pk-meta {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: rgba(231, 236, 243, 0.5);
+}
+
+.pk-preview {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: rgba(231, 236, 243, 0.38);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pk-badges {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding-top: 2px;
+}
+
+.pk-badge {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 10px;
+  color: rgba(231, 236, 243, 0.7);
+  white-space: nowrap;
+}
+
+.pk-badge-word {
+  background: rgba(167, 139, 250, 0.18);
+  color: #b9a3ff;
+}
+
+.pk-badge-tr {
+  background: rgba(96, 165, 250, 0.16);
+  color: #7fb4ff;
+}
+
+.pk-score {
+  flex: 0 0 34px;
+  text-align: right;
+  font-size: 11px;
+  color: rgba(231, 236, 243, 0.32);
+  font-variant-numeric: tabular-nums;
+  padding-top: 2px;
+}
+
+/* ---- 诊断面板：各源尝试记录 + 候选得分 ---- */
+/* 无时间轴提示：不是错误，是"你可以手动校准" */
+.diag-tip {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 186, 92, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 186, 92, 0.08);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: rgba(255, 214, 160, 0.9);
+}
+
+/* 前奏：比正式歌词弱一档，明确"还没开始唱" */
+.line-text.intro {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.diag-attempts {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.diag-attempts-head {
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.diag-attempt {
+  padding: 2px 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  word-break: break-all;
+}
+
+.diag-cand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  margin-bottom: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+}
+
+.diag-cand-rank {
+  flex: 0 0 16px;
+  color: rgba(255, 255, 255, 0.3);
+  font-variant-numeric: tabular-nums;
+}
+
+.diag-cand strong {
+  font-weight: 600;
+}
+
+.diag-cand-score {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ============================================================
+   桌面歌词窗口（label: desktop-lyrics）
+   ------------------------------------------------------------
+   这个窗口整块透明，只画文字。所以文字必须自带描边和阴影，
+   否则浅色壁纸上糊成一片、深色壁纸上又像荧光笔。
+   ============================================================ */
+
+body[data-window='desktop-lyrics'] {
+  background: transparent;
+  overflow: hidden;
+}
+
+/* 复用同一个 index.html，别的窗口结构全部藏掉 */
+body[data-window='desktop-lyrics'] #stage,
+body[data-window='desktop-lyrics'] #settings-root,
+body[data-window='desktop-lyrics'] #picker-root,
+body[data-window='desktop-lyrics'] #full-root,
+body[data-window='desktop-lyrics'] #measure,
+body[data-window='desktop-lyrics'] #debug-status {
+  display: none !important;
+}
+
+#dl {
+  --dl-font: 30px;
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 10px 20px;
+  user-select: none;
+  cursor: default;
+  transition: background 0.18s ease;
+}
+
+/* 解锁态：给一层淡淡的底，告诉用户"现在可以拖" */
+#dl[data-locked='false'] {
+  cursor: grab;
+  background: rgba(10, 12, 18, 0.28);
+  border-radius: 14px;
+}
+
+#dl[data-locked='false']:active {
+  cursor: grabbing;
+}
+
+.dl-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.dl-text {
+  font-size: var(--dl-font);
+  font-weight: 800;
+  letter-spacing: 0.015em;
+  line-height: 1.22;
+  /* 基础色偏暗：亮部由逐字高亮自己发出来 */
+  color: rgba(255, 255, 255, 0.34);
+  text-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.9),
+    0 0 3px rgba(0, 0, 0, 0.75);
+  -webkit-text-stroke: 0.8px rgba(0, 0, 0, 0.28);
+  transition: color 0.12s linear;
+}
+
+.dl-text.intro,
+.dl-text.idle {
+  font-size: calc(var(--dl-font) * 0.62);
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.42);
+  letter-spacing: 0.08em;
+}
+
+.dl-ch {
+  color: rgba(255, 255, 255, 0.34);
+  transition: color 0.14s linear;
+}
+
+.dl-ch.sung {
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.dl-ch.active {
+  color: var(--accent-text, #8fb4ff);
+  text-shadow:
+    0 0 14px var(--accent-glow, rgba(139, 164, 255, 0.75)),
+    0 2px 10px rgba(0, 0, 0, 0.9);
+}
+
+.dl-sub {
+  font-size: calc(var(--dl-font) * 0.42);
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.72);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.dl-sub:empty {
+  display: none;
+}
+
+.dl-handle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 30px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+#dl[data-locked='false'] .dl-handle {
+  display: flex;
+}
+
+/* ============================================================
+   完整歌词窗口（label: full-lyrics）
+   ------------------------------------------------------------
+   这个窗口是有装饰的常规窗口，不透明，所以样式可以正常用。
+   ============================================================ */
+
+body[data-window='full-lyrics'] {
+  background: #14161d;
+  color: #e8ebf2;
+  overflow: hidden;
+}
+
+body[data-window='full-lyrics'] #stage,
+body[data-window='full-lyrics'] #settings-root,
+body[data-window='full-lyrics'] #picker-root,
+body[data-window='full-lyrics'] #desktop-root,
+body[data-window='full-lyrics'] #measure,
+body[data-window='full-lyrics'] #debug-status {
+  display: none !important;
+}
+
+#fl {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fl-header {
+  flex: 0 0 auto;
+  padding: 16px 22px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: linear-gradient(180deg, #1a1d26, #14161d);
+}
+
+.fl-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #f2f4f8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fl-artist {
+  margin-top: 3px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fl-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 12px 40vh;
+  scroll-behavior: smooth;
+}
+
+.fl-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.fl-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+}
+
+.fl-row {
+  padding: 9px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.14s ease, opacity 0.14s ease;
+}
+
+.fl-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.fl-row-main {
+  font-size: 15px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.72);
+  line-height: 1.4;
+}
+
+.fl-row-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+  line-height: 1.35;
+}
+
+.fl-row.passed .fl-row-main {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.fl-row.passed .fl-row-sub {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+.fl-row.active {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.fl-row.active .fl-row-main {
+  color: #fff;
+  font-size: 17px;
+  text-shadow: 0 0 16px var(--accent-glow, rgba(139, 164, 255, 0.5));
+}
+
+.fl-row.active .fl-row-sub {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.fl-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 26px;
+  transform: translate(-50%, 12px);
+  padding: 9px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(24, 27, 38, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.fl-toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}

@@ -1,0 +1,22 @@
+# 前端依赖
+node_modules/
+
+# 前端构建产物
+dist/
+
+# Rust / Tauri 编译产物（体积巨大，绝对不能传）
+src-tauri/target/
+**/target/
+
+# Tauri 生成的本地配置和证书
+src-tauri/gen/
+src-tauri/tauri.conf.local.json
+
+# 编辑器及系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 打包产物
+release-artifacts/
